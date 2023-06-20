@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8"/>
+	
+	<script src="socket.io/4.5.2/socket.io.min.js"></script>
+	
+	
+</head>
+<body>
+	<div style="display: flex;">
+		<div style="width: 50%;">
+			<br/>
+			<br/>
+
+			<div class="login-block">
+				<label>Email</label>
+				<input type="email" id="user_email" value="" />
+				<label>Pass</label>
+				<input type="password" id="user_pass" value="" />
+				<button type="button" onclick="loginUser()">Login</button>
+
+				<br/>
+				<br/>
+				<hr/>
+				<br/>
+			</div>
+			
+			<label>API Token</label>
+			<input type="text" id="user_token" value="" />
+			<button type="button" onclick="initSocket()">Connect WebSocket</button>
+
+			<br/>
+			<br/>
+			<hr/>
+			<br/>
+
+			<label>Extension</label>
+			<input type="text" id="from_number" value="" />
+			<label>To number</label>
+			<input type="text" id="to_number" value="" />
+			<button type="button" onclick="createNewCall()">Create Call</button>
+
+			<br/>
+			<br/>
+			<hr/>
+			<br/>
+
+			<label>Channel</label>
+			<input type="text" id="local_channel" value="" />
+			<button type="button" onclick="hangUpCall()">Hang Up</button>
+		</div>
+		<div style="width: 50%; overflow: scroll;">
+			<pre id="messages"></pre>
+		</div>
+	</div>
+	
+	
+	
+	<script>
+		function loginUser(){
+			var user_email = document.querySelector('#user_email').value;
+			var user_pass = document.querySelector('#user_pass').value;
+
+			var payload = JSON.stringify({ 
+				email: user_email,
+				pass: user_pass
+			});
+
+			var Http = new XMLHttpRequest();
+			Http.open("POST", 'https://api.nuacom.ie/login_digest', true);
+			Http.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+			Http.send(payload);
+			Http.onreadystatechange = function(){
+				if(this.readyState == XMLHttpRequest.DONE && this.status == 200){
+					console.log(Http.responseText, this, JSON.parse(Http.responseText));
+					var response = JSON.parse(Http.responseText);
+
+					document.querySelector('#user_token').value = response.session_token;
+
+					user_pass = document.querySelector('#user_pass').value = '';
+					document.querySelector('.login-block').style.visibility = 'hidden';
+					
+					logMessage("<b>Call created response:</b><br/> "+ JSON.stringify(JSON.parse(Http.responseText), undefined, 2));
+
+					initSocket();
+				}
+			}
+
+		}
+
+		// Get API token from input
+		function getUserToken(){
+			return document.querySelector('#user_token').value;
+		}
+		
+		
+		function initSocket(){
+			var userToken = getUserToken();
+			
+			var socket = io.connect('wss://wss-calls.nuacom.net/extension_calls?client-security-token='+ userToken, {
+				"forceNew" : true,
+				"reconnection": true,
+				"reconnectionAttempts": "Infinity", //avoid having user reconnect manually in order to prevent dead clients after a server restart
+				"timeout" : 5000,                   //before connect_error and connect_timeout are emitted.
+				"transports" : ["websocket"]
+			});
+
+			socket.on('connect', function(){
+				console.log('socket.connected');
+				logMessage("<b>Socket connected</b>");
+			});
+
+			socket.on('disconnected', function(){
+				console.log('socket.disconnected');
+				logMessage("<b>Socket disconnected</b>");
+				socket.connect();
+			});
+
+			setInterval(function(){
+				socket.emit('ding', {hello: 'server'});
+			}, 6000);
+
+			socket.on('dong', function(event){
+				console.log('message from server: ', event);
+			});
+
+			socket.on('room_Calls', function(event){
+				console.log('room_Calls: ', event);
+				
+				// getting chanel to hangup
+				assignCallChannelToInput(event);
+				
+				logMessage("<b>Call event:</b><br/> "+ JSON.stringify(event, undefined, 2));
+			});
+		}
+		
+		
+		// Create a new call
+		// Requires extension to answer and number to dial
+		function createNewCall(){
+			var userToken = getUserToken();
+			
+			var from_number = document.querySelector('#from_number').value;
+			var to_number = document.querySelector('#to_number').value;
+			var payload = JSON.stringify({ 
+				action: "call",
+				call_from_number: from_number,
+				call_to_number: to_number
+			});
+			
+			logMessage("<b>Create call:</b><br/> "+ JSON.stringify(JSON.parse(payload), undefined, 2));
+			
+			var Http = new XMLHttpRequest();
+			Http.open("POST", 'https://api.nuacom.ie/v1/call_back', true);
+			Http.setRequestHeader("client-security-token", userToken);
+			Http.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+			Http.send(payload);
+			Http.onreadystatechange = function(){
+				if(this.readyState == XMLHttpRequest.DONE && this.status == 200){
+					console.log(Http.responseText, this, JSON.parse(Http.responseText));
+					var response = JSON.parse(Http.responseText);
+					
+					logMessage("<b>Call created response:</b><br/> "+ JSON.stringify(JSON.parse(Http.responseText), undefined, 2));
+				}
+			}
+		}
+
+		
+		// Getting chanel to hangup
+		function assignCallChannelToInput(event){
+			if(event && Object.keys(event).length){
+				var event_key = Object.keys(event)[0];
+				var event_body = event[event_key];
+
+				// get channel id without leading 'SIP/'
+				var channel_id = '';
+				var channel_parts = event_body.local_channel.split("SIP/");
+				if( channel_parts[1] ){
+					channel_id = channel_parts[1];
+				}
+
+				document.querySelector('#local_channel').value = channel_id;
+			}
+		}
+		
+		
+		function hangUpCall(){
+			var userToken = getUserToken();
+			
+			var call_channel = document.querySelector('#local_channel').value;
+			var url='https://wss-calls.nuacom.net/call/terminate/SIP/'+ call_channel;
+
+			var Http = new XMLHttpRequest();
+			Http.open("GET", url, true);
+			Http.setRequestHeader("client-security-token", userToken);
+			Http.send();
+			Http.onreadystatechange = function(e){
+				console.log(Http.responseText);
+				if(this.readyState == XMLHttpRequest.DONE && this.status == 200){
+					document.querySelector('#local_channel').value = "";
+					logMessage("<b>Hang Up channel:</b><br/> "+ call_channel);
+				}
+			}
+		}
+		
+		function logMessage(message){
+			document.querySelector('#messages').innerHTML += message +"<br/>";
+		}
+		
+		
+	</script>
+	
+	
+	
+</body>
+</html>
